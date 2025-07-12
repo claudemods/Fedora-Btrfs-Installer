@@ -67,6 +67,7 @@ perform_installation() {
     echo "Desktop: $DESKTOP_ENV"
     echo "Kernel: $KERNEL_TYPE"
     echo "Bootloader: $BOOTLOADER"
+    echo "Repositories: ${REPOS[@]}"
     echo "Compression Level: $COMPRESSION_LEVEL${NC}"
     echo -ne "${CYAN}Continue? (y/n): ${NC}"
     read confirm
@@ -113,22 +114,37 @@ perform_installation() {
     cyan_output mount -o subvol=@log,compress=zstd:$COMPRESSION_LEVEL,compress-force=zstd:$COMPRESSION_LEVEL "${TARGET_DISK}2" /mnt/var/log
     cyan_output mount -o subvol=@cache,compress=zstd:$COMPRESSION_LEVEL,compress-force=zstd:$COMPRESSION_LEVEL "${TARGET_DISK}2" /mnt/var/cache
 
-    # Base packages based on kernel selection
+    # Determine kernel package based on selection
     case "$KERNEL_TYPE" in
         "Standard") KERNEL_PKG="kernel" ;;
         "LTS") KERNEL_PKG="kernel-lts" ;;
         "Realtime") KERNEL_PKG="kernel-rt" ;;
     esac
 
+    # Base packages based on bootloader selection
     BASE_PKGS="@core $KERNEL_PKG btrfs-progs nano"
-
-    # Add bootloader packages
     case "$BOOTLOADER" in
         "GRUB") BASE_PKGS="$BASE_PKGS grub2 efibootmgr dosfstools" ;;
         "systemd-boot") BASE_PKGS="$BASE_PKGS systemd-boot" ;;
     esac
 
-    dnf --installroot=/mnt install -y $BASE_PKGS >/dev/null 2>&1
+    # Add selected repositories
+    for repo in "${REPOS[@]}"; do
+        case "$repo" in
+            "multilib")
+                echo -e "${CYAN}Enabling multilib repository...${NC}"
+                dnf config-manager --set-enabled fedora-multilib >/dev/null 2>&1
+                ;;
+            "testing")
+                echo -e "${CYAN}Enabling testing repository...${NC}"
+                dnf config-manager --set-enabled updates-testing >/dev/null 2>&1
+                ;;
+            "community-testing")
+                echo -e "${CYAN}Enabling community-testing repository...${NC}"
+                dnf config-manager --set-enabled updates-testing-modular >/dev/null 2>&1
+                ;;
+        esac
+    done
 
     # Generate fstab
     echo -e "${CYAN}Generating fstab with BTRFS subvolumes...${NC}"
@@ -144,6 +160,9 @@ perform_installation() {
         echo "UUID=$ROOT_UUID /var/tmp       btrfs   rw,noatime,compress=zstd:$COMPRESSION_LEVEL,discard=async,space_cache=v2,subvol=/@tmp 0 0"
         echo "UUID=$ROOT_UUID /var/log       btrfs   rw,noatime,compress=zstd:$COMPRESSION_LEVEL,discard=async,space_cache=v2,subvol=/@log 0 0"
     } > /mnt/etc/fstab
+
+    # Install base system
+    dnf --installroot=/mnt install -y $BASE_PKGS >/dev/null 2>&1
 
     # Chroot setup
     cat << CHROOT | tee /mnt/setup-chroot.sh >/dev/null
@@ -182,6 +201,112 @@ linux   /vmlinuz-$KERNEL_PKG
 initrd  /initramfs-$KERNEL_PKG.img
 options root=UUID=$ROOT_UUID rootflags=subvol=@ rw
 ENTRY
+        ;;
+esac
+# Install desktop environment and related packages only if selected
+case "$DESKTOP_ENV" in
+    "GNOME")
+        dnf install -y @gnome-desktop gnome-terminal firefox pulseaudio pavucontrol >/dev/null 2>&1
+        systemctl enable gdm
+        ;;
+    "KDE Plasma")
+        dnf install -y @kde-desktop plasma-discover dolphin konsole firefox pulseaudio pavucontrol >/dev/null 2>&1
+        systemctl enable sddm
+        ;;
+    "XFCE")
+        dnf install -y @xfce-desktop xfce4-goodies lightdm lightdm-gtk-greeter mousepad xfce4-terminal firefox pulseaudio pavucontrol >/dev/null 2>&1
+        systemctl enable lightdm
+        ;;
+    "MATE")
+        dnf install -y @mate-desktop mate-media lightdm lightdm-gtk-greeter pluma mate-terminal firefox pulseaudio pavucontrol >/dev/null 2>&1
+        systemctl enable lightdm
+        ;;
+    "LXQt")
+        dnf install -y @lxqt-desktop breeze-icons sddm qterminal firefox pulseaudio pavucontrol >/dev/null 2>&1
+        systemctl enable sddm
+        ;;
+    "Cinnamon")
+        dnf install -y @cinnamon-desktop cinnamon-translations lightdm lightdm-gtk-greeter xed gnome-terminal firefox pulseaudio pavucontrol >/dev/null 2>&1
+        systemctl enable lightdm
+        ;;
+    "Budgie")
+        dnf install -y @budgie-desktop budgie-extras gnome-control-center gnome-terminal lightdm lightdm-gtk-greeter firefox pulseaudio pavucontrol >/dev/null 2>&1
+        systemctl enable lightdm
+        ;;
+    "Deepin")
+        dnf install -y @deepin-desktop deepin-extra lightdm deepin-terminal firefox pulseaudio pavucontrol >/dev/null 2>&1
+        systemctl enable lightdm
+        ;;
+    "i3")
+        dnf install -y i3-wm i3status i3lock dmenu lightdm lightdm-gtk-greeter alacritty firefox pulseaudio pavucontrol >/dev/null 2>&1
+        systemctl enable lightdm
+        ;;
+    "Sway")
+        dnf install -y sway swaylock swayidle waybar wofi lightdm lightdm-gtk-greeter foot firefox pulseaudio pavucontrol >/dev/null 2>&1
+        systemctl enable lightdm
+        ;;
+    "Hyprland")
+        dnf install -y hyprland waybar rofi wofi kitty swaybg swaylock-effects wl-clipboard lightdm lightdm-gtk-greeter firefox pulseaudio pavucontrol >/dev/null 2>&1
+        systemctl enable lightdm
+        # Create Hyprland config directory
+        mkdir -p /home/$USER_NAME/.config/hypr
+        cat > /home/$USER_NAME/.config/hypr/hyprland.conf << 'HYPRCONFIG'
+# This is a basic Hyprland config
+exec-once = waybar &
+exec-once = swaybg -i ~/wallpaper.jpg &
+monitor=,preferred,auto,1
+input {
+    kb_layout = us
+    follow_mouse = 1
+    touchpad {
+        natural_scroll = yes
+    }
+}
+general {
+    gaps_in = 5
+    gaps_out = 10
+    border_size = 2
+    col.active_border = rgba(33ccffee) rgba(00ff99ee) 45deg
+    col.inactive_border = rgba(595959aa)
+}
+decoration {
+    rounding = 5
+    blur = yes
+    blur_size = 3
+    blur_passes = 1
+    blur_new_optimizations = on
+}
+animations {
+    enabled = yes
+    bezier = myBezier, 0.05, 0.9, 0.1, 1.05
+    animation = windows, 1, 7, myBezier
+    animation = windowsOut, 1, 7, default, popin 80%
+    animation = border, 1, 10, default
+    animation = fade, 1, 7, default
+    animation = workspaces, 1, 6, default
+}
+dwindle {
+    pseudotile = yes
+    preserve_split = yes
+}
+master {
+    new_is_master = true
+}
+bind = SUPER, Return, exec, kitty
+bind = SUPER, Q, killactive,
+bind = SUPER, M, exit,
+bind = SUPER, V, togglefloating,
+bind = SUPER, F, fullscreen,
+bind = SUPER, D, exec, rofi -show drun
+bind = SUPER, P, pseudo,
+bind = SUPER, J, togglesplit,
+HYPRCONFIG
+        # Set ownership of config files
+        chown -R $USER_NAME:$USER_NAME /home/$USER_NAME/.config
+        ;;
+    "None")
+        # Install nothing extra for minimal system
+        echo "No desktop environment selected - minimal installation"
         ;;
 esac
 # Enable TRIM for SSDs
@@ -239,7 +364,7 @@ configure_installation() {
     USER_PASSWORD=$(dialog --title "User Password" --passwordbox "Enter user password:" 8 40 3>&1 1>&2 2>&3)
     ROOT_PASSWORD=$(dialog --title "Root Password" --passwordbox "Enter root password:" 8 40 3>&1 1>&2 2>&3)
     # Kernel selection
-    KERNEL_TYPE=$(dialog --title "Kernel Selection" --menu "Select kernel:" 15 40 4 \
+    KERNEL_TYPE=$(dialog --title "Kernel Selection" --menu "Select kernel:" 15 40 3 \
         "Standard" "Standard Fedora kernel" \
         "LTS" "Long-term support kernel" \
         "Realtime" "Real-time kernel" 3>&1 1>&2 2>&3)
@@ -247,6 +372,31 @@ configure_installation() {
     BOOTLOADER=$(dialog --title "Bootloader Selection" --menu "Select bootloader:" 15 40 2 \
         "GRUB" "GRUB (recommended for most users)" \
         "systemd-boot" "Minimal systemd-boot" 3>&1 1>&2 2>&3)
+    # Repository selection
+    REPOS=()
+    repo_options=()
+    repo_status=()
+    # Check current repo status in dnf.conf to set defaults
+    if dnf repolist enabled | grep -q "fedora-multilib"; then
+        repo_status+=("on")
+    else
+        repo_status+=("off")
+    fi
+    repo_options+=("multilib" "32-bit software support" ${repo_status[0]})
+    if dnf repolist enabled | grep -q "updates-testing"; then
+        repo_status+=("on")
+    else
+        repo_status+=("off")
+    fi
+    repo_options+=("testing" "Testing repository" ${repo_status[1]})
+    if dnf repolist enabled | grep -q "updates-testing-modular"; then
+        repo_status+=("on")
+    else
+        repo_status+=("off")
+    fi
+    repo_options+=("community-testing" "Community testing repository" ${repo_status[2]})
+    REPOS=($(dialog --title "Additional Repositories" --checklist "Enable additional repositories:" 15 50 5 \
+        "${repo_options[@]}" 3>&1 1>&2 2>&3))
     DESKTOP_ENV=$(dialog --title "Desktop Environment" --menu "Select desktop:" 20 50 12 \
         "GNOME" "GNOME Desktop (gnome)" \
         "KDE Plasma" "KDE Plasma Desktop (plasma-desktop)" \
@@ -256,6 +406,9 @@ configure_installation() {
         "Cinnamon" "Cinnamon Desktop (cinnamon)" \
         "Budgie" "Budgie Desktop (budgie-desktop)" \
         "Deepin" "Deepin Desktop (deepin)" \
+        "i3" "i3 Window Manager (i3-wm)" \
+        "Sway" "Sway Wayland Compositor (sway)" \
+        "Hyprland" "Hyprland Wayland Compositor (hyprland)" \
         "None" "No desktop environment (minimal install)" 3>&1 1>&2 2>&3)
     COMPRESSION_LEVEL=$(dialog --title "Compression Level" --inputbox "Enter BTRFS compression level (0-22, default is 3):" 8 40 3 3>&1 1>&2 2>&3)
     # Validate compression level
